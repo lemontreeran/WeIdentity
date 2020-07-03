@@ -147,6 +147,23 @@ public class TestCreateCredentialPojo extends TestBaseService {
         Assert.assertEquals(verify.getErrorCode().intValue(),
             ErrorCode.CREDENTIAL_VERIFY_SUCCEEDED_WITH_WRONG_PUBLIC_KEY_ID.getCode());
 
+        // Create another WeID with this guy's public key and use it to verify
+        CreateWeIdDataResult cwdr2 = createWeIdWithSetAttr();
+        SetAuthenticationArgs arg2 = new SetAuthenticationArgs();
+        arg2.setOwner(cwdr2.getWeId());
+        arg2.setWeId(cwdr2.getWeId());
+        arg2.setPublicKey(pwKey.getPublicKey());
+        arg2.setUserWeIdPrivateKey(cwdr2.getUserWeIdPrivateKey());
+        ResponseData<Boolean> addResp2 = weIdService.setAuthentication(arg2);
+        System.out.println(weIdService.getWeIdDocumentJson(cwdr2.getWeId()));
+
+        // Verify using another WeID as issuerWeId
+        verify = credentialPojoService.verify(cwdr2.getWeId(), createResp.getResult());
+        Assert.assertTrue(verify.getResult());
+        verify = credentialPojoService.verify(cwdr2.getWeId(), "1", createResp.getResult());
+        Assert.assertTrue(verify.getResult());
+        verify = credentialPojoService.verify(cwdr2.getWeId(), "0", createResp.getResult());
+        Assert.assertFalse(verify.getResult());
     }
 
     /**

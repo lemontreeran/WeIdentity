@@ -465,15 +465,27 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
         }
     }
 
+    /**
+     * Verify the content inside a credentialPojo.
+     *
+     * @param credential the credential pojo
+     * @param publicKey the passed-in public key to check sig - if null, will go online to chain
+     * @param offLine the offline mode flag
+     * @param weIdPublicKeyId the WeID public key ID to check from online WeIdDocument
+     * @param issuerWeId the issuer WeID to check from online to obtain the WeIdDocument
+     * @return specific error codes
+     */
     private static ErrorCode verifyContent(
         CredentialPojo credential,
         String publicKey,
         boolean offLine,
-        String weIdPublicKeyId
+        String weIdPublicKeyId,
+        String issuerWeId
     ) {
         ErrorCode errorCode;
         try {
-            errorCode = verifyContentInner(credential, publicKey, offLine, weIdPublicKeyId);
+            errorCode = verifyContentInner(
+                credential, publicKey, offLine, weIdPublicKeyId, issuerWeId);
         } catch (WeIdBaseException ex) {
             logger.error("[verifyContent] verify credential has exception.", ex);
             return ex.getErrorCode();
@@ -538,7 +550,8 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
         CredentialPojo credential,
         String publicKey,
         boolean offline,
-        String weIdPublicKeyId
+        String weIdPublicKeyId,
+        String issuerWeId
     ) {
         ErrorCode checkResp = CredentialPojoUtils.isCredentialPojoValid(credential);
         if (ErrorCode.SUCCESS.getCode() != checkResp.getCode()) {
@@ -553,8 +566,9 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
             .intValue() || credential.getCptId() == CredentialConstant.EMBEDDED_TIMESTAMP_CPT
             .intValue()) {
             // This is a multi-signed Credential. We firstly verify itself (i.e. external check)
+            // In multi-signed Credential verify, externally provided issuerWeID is omitted
             ErrorCode errorCode = verifySingleSignedCredential(
-                credential, publicKey, offline, weIdPublicKeyId);
+                credential, publicKey, offline, weIdPublicKeyId, credential.getIssuer());
             if (errorCode != ErrorCode.SUCCESS) {
                 return errorCode;
             }
@@ -582,8 +596,10 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
                     } else {
                         innerCredential = (CredentialPojo) innerCredentialObject;
                     }
+                    // In multi-signed Credential verify, externally provided issuerWeID is omitted
                     errorCode = verifyContentInner(
-                        innerCredential, null, offline, weIdPublicKeyId);
+                        innerCredential, null, offline, weIdPublicKeyId,
+                        innerCredential.getIssuer());
                     if (errorCode != ErrorCode.SUCCESS) {
                         return errorCode;
                     }
@@ -594,14 +610,16 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
             }
             return ErrorCode.SUCCESS;
         }
-        return verifySingleSignedCredential(credential, publicKey, offline, weIdPublicKeyId);
+        return verifySingleSignedCredential(
+            credential, publicKey, offline, weIdPublicKeyId, issuerWeId);
     }
 
     private static ErrorCode verifySingleSignedCredential(
         CredentialPojo credential,
         String publicKey,
         boolean offline,
-        String weIdPublicKeyId
+        String weIdPublicKeyId,
+        String issuerWeId
     ) {
         ErrorCode errorCode = verifyCptFormat(
             credential.getCptId(),
@@ -635,15 +653,17 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
             rawData = CredentialPojoUtils
                 .getCredentialThumbprintWithoutSig(credential, salt, null);
         }
-        String issuerWeid = credential.getIssuer();
+        if (!WeIdUtils.isWeIdValid(issuerWeId)) {
+            return ErrorCode.WEID_INVALID;
+        }
         if (StringUtils.isEmpty(publicKey)) {
             // Fetch public key from chain
             ResponseData<WeIdDocument> innerResponseData =
-                getWeIdService().getWeIdDocument(issuerWeid);
+                getWeIdService().getWeIdDocument(issuerWeId);
             if (innerResponseData.getErrorCode() != ErrorCode.SUCCESS.getCode()) {
                 logger.error(
                     "Error occurred when fetching WeIdentity DID document for: {}, msg: {}",
-                    issuerWeid, innerResponseData.getErrorMessage());
+                    issuerWeId, innerResponseData.getErrorMessage());
                 return ErrorCode.getTypeByErrorCode(innerResponseData.getErrorCode());
             } else {
                 WeIdDocument weIdDocument = innerResponseData.getResult();
@@ -909,7 +929,8 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
     private static ResponseData<Boolean> verifyLiteCredential(
         CredentialPojo credential,
         String publicKey,
-        String weIdPublicKeyId) {
+        String weIdPublicKeyId,
+        String issuerWeId) {
         // Lite Credential only contains limited areas (others truncated)
         if (credential.getCptId() == null || credential.getCptId().intValue() < 0) {
             return new ResponseData<>(false, ErrorCode.CPT_ID_ILLEGAL);
@@ -925,7 +946,7 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
         }
         String rawData = CredentialPojoUtils.getLiteCredentialThumbprintWithoutSig(credential);
 
-        // Using provided public key to verify signature
+        // Using provided public key to verify signature and ignore public key ID and issuer WeID
         if (!StringUtils.isBlank(publicKey)) {
             boolean result;
             try {
@@ -943,14 +964,17 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
         }
 
         // No existing public key hence go chain
-        String issuerWeid = credential.getIssuer();
+        if (!WeIdUtils.isWeIdValid(issuerWeId)) {
+            logger.error("Input Isser WeID is invalid: {}", issuerWeId);
+            return new ResponseData<>(false, ErrorCode.WEID_INVALID);
+        }
         // Fetch public key from chain
         ResponseData<WeIdDocument> innerResponseData =
-            getWeIdService().getWeIdDocument(issuerWeid);
+            getWeIdService().getWeIdDocument(issuerWeId);
         if (innerResponseData.getErrorCode() != ErrorCode.SUCCESS.getCode()) {
             logger.error(
                 "Error occurred when fetching WeIdentity DID document for: {}, msg: {}",
-                issuerWeid, innerResponseData.getErrorMessage());
+                issuerWeId, innerResponseData.getErrorMessage());
             return new ResponseData<Boolean>(false,
                 ErrorCode.getTypeByErrorCode(innerResponseData.getErrorCode()));
         } else {
@@ -1358,15 +1382,14 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
             return verifyZkpCredential(credential);
         }
 
-        String issuerId = credential.getIssuer();
-        if (!StringUtils.equals(issuerWeId, issuerId)) {
-            logger.error("[verify] The input issuer weid is not match the credential's.");
-            return new ResponseData<Boolean>(false, ErrorCode.CREDENTIAL_ISSUER_MISMATCH);
+        if (StringUtils.isEmpty(issuerWeId)) {
+            logger.info("[verify] The input issuer WeID is empty, using the one in credential.");
+            issuerWeId = credential.getIssuer();
         }
         if (CredentialPojoUtils.isLiteCredential(credential)) {
-            return verifyLiteCredential(credential, null, null);
+            return verifyLiteCredential(credential, null, null, issuerWeId);
         }
-        ErrorCode errorCode = verifyContent(credential, null, false, null);
+        ErrorCode errorCode = verifyContent(credential, null, false, null, issuerWeId);
         if (errorCode.getCode() != ErrorCode.SUCCESS.getCode()) {
             logger.error("[verify] credential verify failed. error message :{}", errorCode);
             return new ResponseData<Boolean>(false, errorCode);
@@ -1390,9 +1413,11 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
             return new ResponseData<Boolean>(false, ErrorCode.CREDENTIAL_PUBLIC_KEY_NOT_EXISTS);
         }
         if (CredentialPojoUtils.isLiteCredential(credential)) {
-            return verifyLiteCredential(credential, issuerPublicKey.getPublicKey(), null);
+            return verifyLiteCredential(
+                credential, issuerPublicKey.getPublicKey(), null, credential.getIssuer());
         }
-        ErrorCode errorCode = verifyContent(credential, publicKey, false, null);
+        ErrorCode errorCode = verifyContent(
+            credential, publicKey, false, null, credential.getIssuer());
         if (errorCode.getCode() != ErrorCode.SUCCESS.getCode()) {
             return new ResponseData<Boolean>(false, errorCode);
         }
@@ -1454,7 +1479,8 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
                     return verifyZkpCredential(credential);
 
                 }
-                ErrorCode verifyCredentialResult = verifyContent(credential, null, false, null);
+                ErrorCode verifyCredentialResult = verifyContent(
+                    credential, null, false, null, credential.getIssuer());
                 if (verifyCredentialResult.getCode() != ErrorCode.SUCCESS.getCode()) {
                     logger.error(
                         "[verify] verify credential {} failed.", credential);
@@ -1485,15 +1511,15 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
         if (isZkpCredential(credential)) {
             return verifyZkpCredential(credential);
         }
-        String issuerId = credential.getIssuer();
-        if (!StringUtils.equals(issuerWeId, issuerId)) {
-            logger.error("[verify] The input issuer weid is not match the credential's.");
-            return new ResponseData<Boolean>(false, ErrorCode.CREDENTIAL_ISSUER_MISMATCH);
+        if (StringUtils.isEmpty(issuerWeId)) {
+            logger.info("[verify] The input issuer WeID is empty, using the one in credential.");
+            issuerWeId = credential.getIssuer();
         }
         if (CredentialPojoUtils.isLiteCredential(credential)) {
-            return verifyLiteCredential(credential, null, weIdPublicKeyId);
+            return verifyLiteCredential(credential, null, weIdPublicKeyId, issuerWeId);
         }
-        ErrorCode errorCode = verifyContent(credential, null, false, weIdPublicKeyId);
+        ErrorCode errorCode = verifyContent(
+            credential, null, false, weIdPublicKeyId, issuerWeId);
         if (errorCode.getCode() != ErrorCode.SUCCESS.getCode()) {
             logger.error("[verify] credential verify failed. error message :{}", errorCode);
             return new ResponseData<Boolean>(false, errorCode);
@@ -1517,9 +1543,11 @@ public class CredentialPojoServiceImpl implements CredentialPojoService {
             return new ResponseData<Boolean>(false, ErrorCode.CREDENTIAL_PUBLIC_KEY_NOT_EXISTS);
         }
         if (CredentialPojoUtils.isLiteCredential(credential)) {
-            return verifyLiteCredential(credential, issuerPublicKey.getPublicKey(), null);
+            return verifyLiteCredential(
+                credential, issuerPublicKey.getPublicKey(), null, credential.getIssuer());
         }
-        ErrorCode errorCode = verifyContent(credential, publicKey, true, null);
+        ErrorCode errorCode = verifyContent(
+            credential, publicKey, true, null, credential.getIssuer());
         if (errorCode.getCode() != ErrorCode.SUCCESS.getCode()) {
             return new ResponseData<Boolean>(false, errorCode);
         }

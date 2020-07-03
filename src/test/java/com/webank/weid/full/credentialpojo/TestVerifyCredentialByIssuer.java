@@ -259,22 +259,6 @@ public class TestVerifyCredentialByIssuer extends TestBaseService {
     }
 
     /**
-     * case: issuer and credentialPojo.issuer is different .
-     */
-    @Test
-    public void testVerifyCredential_otherIssuer() {
-
-        String issuer = createWeIdNew.getWeId();
-
-        ResponseData<Boolean> response = credentialPojoService.verify(issuer, credentialPojo);
-        LogUtil.info(logger, "verifyCredential", response);
-
-        Assert.assertEquals(ErrorCode.CREDENTIAL_ISSUER_MISMATCH.getCode(),
-            response.getErrorCode().intValue());
-        Assert.assertEquals(false, response.getResult());
-    }
-
-    /**
      * case: issuer not exist .
      */
     @Test
@@ -285,7 +269,7 @@ public class TestVerifyCredentialByIssuer extends TestBaseService {
             .verify(issuer, selectiveCredentialPojo);
         LogUtil.info(logger, "verifyCredential", response);
 
-        Assert.assertEquals(ErrorCode.CREDENTIAL_ISSUER_MISMATCH.getCode(),
+        Assert.assertEquals(ErrorCode.WEID_DOES_NOT_EXIST.getCode(),
             response.getErrorCode().intValue());
         Assert.assertEquals(false, response.getResult());
     }
